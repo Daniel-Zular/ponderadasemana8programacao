@@ -2,6 +2,9 @@
 
 Documento para acompanhar o notebook de detecção de bots no Twitter usando **BERT** com **TensorFlow/Keras** e **Hugging Face**. O foco é ter um passo a passo claro, com poucas citações de código para situar.
 
+
+
+(Para mim, está dando erro ao tentar abrir o notebook pelo GitHub. Talvez seja interessante baixar e abrir no VSCode)
 ---
 
 ## Objetivo
