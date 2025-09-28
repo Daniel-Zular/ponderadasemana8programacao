@@ -210,3 +210,91 @@ Em alguns cenários, vale ajustar com base no conjunto de validação para maxim
   Preferir `SavedModel` (quando funcionar) ou salvar pesos e reconstruir a arquitetura.  
   Alternativa melhor: `TFBertForSequenceClassification + save_pretrained`.  
 '''
+
+
+## Ir além: threshold ótimo, atenção e erros
+
+1. **Threshold ótimo (F1)** → encontra o melhor limiar de decisão no conjunto de validação.  
+2. **Explicabilidade por atenção** → mostra quais tokens receberam mais atenção do BERT.  
+3. **Análise de erros** → lista os *false positives* e *false negatives* mais confiantes.
+
+
+```python
+import numpy as np
+import tensorflow as tf
+
+# ---------- (1) Threshold ótimo ----------
+val_y   = val_df["label"].values.astype(int)
+val_prob = model.predict(val_ds, verbose=0).ravel().astype(float)
+
+ths = np.linspace(0.2, 0.8, 121)
+best_f1, best_thr = -1.0, 0.5
+for thr in ths:
+    pred = (val_prob >= thr).astype(int)
+    tp = np.sum((val_y==1) & (pred==1))
+    fp = np.sum((val_y==0) & (pred==1))
+    fn = np.sum((val_y==1) & (pred==0))
+    precision = tp/(tp+fp+1e-12); recall = tp/(tp+fn+1e-12)
+    f1 = 2*precision*recall/(precision+recall+1e-12)
+    if f1 > best_f1:
+        best_f1, best_thr = f1, thr
+
+print(f"Threshold ótimo: {best_thr:.3f} | F1≈{best_f1:.4f}")
+
+# ---------- (2) Explicabilidade por atenção ----------
+backbone.config.output_attentions = True
+
+def explain_with_attention(text, k_top=8, max_len=128):
+    enc = tokenizer(
+        [text],
+        max_length=max_len,
+        padding="max_length",
+        truncation=True,
+        return_tensors="tf",
+        add_special_tokens=True
+    )
+    outputs = backbone(
+        input_ids=enc["input_ids"],
+        attention_mask=enc["attention_mask"],
+        output_attentions=True,
+        training=False
+    )
+    att = outputs.attentions[-1]
+    att_mean = tf.reduce_mean(att, axis=1)
+    att_cls_to_tokens = att_mean[0, 0, :]
+    scores = att_cls_to_tokens.numpy()
+
+    ids = enc["input_ids"][0].numpy().tolist()
+    toks = tokenizer.convert_ids_to_tokens(ids)
+    mask = enc["attention_mask"][0].numpy().astype(bool)
+    toks = np.array(toks)[mask]
+    scores = scores[:len(toks)]
+
+    keep = [i for i,t in enumerate(toks) if t not in ("[CLS]","[SEP]","[PAD]")]
+    toks_vis = toks[keep]
+    scores_vis = scores[keep]
+
+    top_idx = np.argsort(-scores_vis)[:min(k_top, len(scores_vis))]
+    return [(toks_vis[i], float(scores_vis[i])) for i in top_idx]
+
+sample_text = "Free iPhone!!! Click here http://spam"
+print("Tokens mais relevantes:", explain_with_attention(sample_text))
+
+# ---------- (3) Análise de erros ----------
+val_pred = (val_prob >= best_thr).astype(int)
+fp_idx = np.where((val_y==0) & (val_pred==1))[0]
+fn_idx = np.where((val_y==1) & (val_pred==0))[0]
+val_df_reset = val_df.reset_index(drop=True)
+
+fp_sorted = fp_idx[np.argsort(-val_prob[fp_idx])]
+fn_sorted = fn_idx[np.argsort( val_prob[fn_idx])]
+
+print("\nFalse Positives mais confiantes:")
+for i in fp_sorted[:5]:
+    print(f"[FP] prob_bot={val_prob[i]*100:5.1f}% | {val_df_reset.loc[i,'text'][:200]}")
+
+print("\nFalse Negatives mais confiantes:")
+for i in fn_sorted[:5]:
+    print(f"[FN] prob_bot={val_prob[i]*100:5.1f}% | {val_df_reset.loc[i,'text'][:200]}")
+
+```
